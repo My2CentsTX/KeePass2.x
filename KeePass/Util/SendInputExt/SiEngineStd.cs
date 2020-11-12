@@ -1,6 +1,6 @@
 ﻿/*
   KeePass Password Safe - The Open-Source Password Manager
-  Copyright (C) 2003-2017 Dominik Reichl <dominik.reichl@t-online.de>
+  Copyright (C) 2003-2020 Dominik Reichl <dominik.reichl@t-online.de>
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -19,21 +19,25 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Security;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
-using System.Diagnostics;
 
 using KeePass.Native;
+using KeePass.Resources;
+
+using KeePassLib.Utility;
 
 namespace KeePass.Util.SendInputExt
 {
-	public abstract class SiEngineStd : ISiEngine
+	internal abstract class SiEngineStd : ISiEngine
 	{
-		public IntPtr TargetHWnd = IntPtr.Zero;
-		public string TargetWindowTitle = string.Empty;
+		protected IntPtr TargetHWnd = IntPtr.Zero;
+		protected string TargetWindowTitle = string.Empty;
 
-		public bool Cancelled = false;
+		protected bool Cancelled = false;
 
 		private Stopwatch m_swLastEvent = new Stopwatch();
 #if DEBUG
@@ -61,9 +65,9 @@ namespace KeePass.Util.SendInputExt
 			m_swLastEvent.Stop();
 		}
 
-		public abstract void SendKeyImpl(int iVKey, bool? bExtKey, bool? bDown);
+		public abstract void SendKeyImpl(int iVKey, bool? obExtKey, bool? obDown);
 		public abstract void SetKeyModifierImpl(Keys kMod, bool bDown);
-		public abstract void SendCharImpl(char ch, bool? bDown);
+		public abstract void SendCharImpl(char ch, bool? obDown);
 
 		private bool PreSendEvent()
 		{
@@ -74,11 +78,11 @@ namespace KeePass.Util.SendInputExt
 			return ValidateState();
 		}
 
-		public void SendKey(int iVKey, bool? bExtKey, bool? bDown)
+		public void SendKey(int iVKey, bool? obExtKey, bool? obDown)
 		{
 			if(!PreSendEvent()) return;
 
-			SendKeyImpl(iVKey, bExtKey, bDown);
+			SendKeyImpl(iVKey, obExtKey, obDown);
 
 			Application.DoEvents();
 		}
@@ -92,11 +96,11 @@ namespace KeePass.Util.SendInputExt
 			Application.DoEvents();
 		}
 
-		public void SendChar(char ch, bool? bDown)
+		public void SendChar(char ch, bool? obDown)
 		{
 			if(!PreSendEvent()) return;
 
-			SendCharImpl(ch, bDown);
+			SendCharImpl(ch, obDown);
 
 			Application.DoEvents();
 		}
@@ -131,32 +135,57 @@ namespace KeePass.Util.SendInputExt
 		{
 			if(this.Cancelled) return false;
 
-			bool bChkWnd = Program.Config.Integration.AutoTypeCancelOnWindowChange;
-			bool bChkTitle = Program.Config.Integration.AutoTypeCancelOnTitleChange;
-			if(!bChkWnd && !bChkTitle) return true;
+			List<string> lAbortWindows = Program.Config.Integration.AutoTypeAbortOnWindows;
 
-			bool bValid = true;
-			try
+			bool bChkWndCh = Program.Config.Integration.AutoTypeCancelOnWindowChange;
+			bool bChkTitleCh = Program.Config.Integration.AutoTypeCancelOnTitleChange;
+			bool bChkTitleFx = (lAbortWindows.Count != 0);
+
+			if(bChkWndCh || bChkTitleCh || bChkTitleFx)
 			{
-				IntPtr h;
-				string strTitle;
-				NativeMethods.GetForegroundWindowInfo(out h, out strTitle, false);
-
-				if(bChkWnd && (h != this.TargetHWnd))
+				IntPtr h = IntPtr.Zero;
+				string strTitle = null;
+				bool bHasInfo = true;
+				try
 				{
-					this.Cancelled = true;
-					bValid = false;
+					NativeMethods.GetForegroundWindowInfo(out h, out strTitle, false);
 				}
+				catch(Exception) { Debug.Assert(false); bHasInfo = false; }
+				if(strTitle == null) strTitle = string.Empty;
 
-				if(bChkTitle && ((strTitle ?? string.Empty) != this.TargetWindowTitle))
+				if(bHasInfo)
 				{
-					this.Cancelled = true;
-					bValid = false;
+					if(bChkWndCh && (h != this.TargetHWnd))
+					{
+						this.Cancelled = true;
+						return false;
+					}
+
+					if(bChkTitleCh && (strTitle != this.TargetWindowTitle))
+					{
+						this.Cancelled = true;
+						return false;
+					}
+
+					if(bChkTitleFx)
+					{
+						foreach(string strWnd in lAbortWindows)
+						{
+							if(string.IsNullOrEmpty(strWnd)) continue;
+
+							if(AutoType.MatchWindows(strWnd, strTitle))
+							{
+								this.Cancelled = true;
+								throw new SecurityException(KPRes.AutoTypeAbortedOnWindow +
+									MessageService.NewParagraph + KPRes.TargetWindow +
+									@": '" + strTitle + @"'.");
+							}
+						}
+					}
 				}
 			}
-			catch(Exception) { Debug.Assert(false); }
 
-			return bValid;
+			return true;
 		}
 	}
 }

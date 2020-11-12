@@ -1,6 +1,6 @@
 /*
   KeePass Password Safe - The Open-Source Password Manager
-  Copyright (C) 2003-2017 Dominik Reichl <dominik.reichl@t-online.de>
+  Copyright (C) 2003-2020 Dominik Reichl <dominik.reichl@t-online.de>
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -19,15 +19,16 @@
 
 using System;
 using System.Collections.Generic;
-using System.Text;
 using System.Diagnostics;
-using System.Windows.Forms;
 using System.Drawing;
+using System.Text;
+using System.Windows.Forms;
 
 using KeePass.App;
 using KeePass.Forms;
+using KeePass.Native;
+using KeePass.Util;
 
-using KeePassLib.Native;
 using KeePassLib.Utility;
 
 namespace KeePass.UI
@@ -59,7 +60,7 @@ namespace KeePass.UI
 			new List<KeyValuePair<Form, IGwmWindow>>();
 		private static List<CommonDialog> g_vDialogs = new List<CommonDialog>();
 
-		private static object g_oSyncRoot = new object();
+		private static readonly object g_oSyncRoot = new object();
 
 		public static uint WindowCount
 		{
@@ -120,8 +121,7 @@ namespace KeePass.UI
 
 		public static void AddWindow(Form form, IGwmWindow wnd)
 		{
-			Debug.Assert(form != null);
-			if(form == null) throw new ArgumentNullException("form");
+			if(form == null) { Debug.Assert(false); throw new ArgumentNullException("form"); }
 
 			KeyValuePair<Form, IGwmWindow> kvp = new KeyValuePair<Form, IGwmWindow>(
 				form, wnd);
@@ -134,8 +134,8 @@ namespace KeePass.UI
 
 			// The control box must be enabled, otherwise DPI scaling
 			// doesn't work due to a .NET bug:
-			// http://connect.microsoft.com/VisualStudio/feedback/details/694242/difference-dpi-let-the-button-cannot-appear-completely-while-remove-the-controlbox-for-the-form
-			// http://social.msdn.microsoft.com/Forums/en-US/winforms/thread/67407313-8cb2-42b4-afb9-8be816f0a601/
+			// https://connect.microsoft.com/VisualStudio/feedback/details/694242/difference-dpi-let-the-button-cannot-appear-completely-while-remove-the-controlbox-for-the-form
+			// https://social.msdn.microsoft.com/Forums/en-US/winforms/thread/67407313-8cb2-42b4-afb9-8be816f0a601/
 			Debug.Assert(form.ControlBox);
 
 			form.TopMost = Program.Config.MainWindow.AlwaysOnTop;
@@ -148,6 +148,9 @@ namespace KeePass.UI
 			CustomizeForm(form);
 
 			MonoWorkarounds.ApplyTo(form);
+
+			Debug.Assert(!(form is MainForm)); // MainForm calls the following itself
+			CustomizeFormHandleCreated(form, true, true);
 
 			if(GlobalWindowManager.WindowAdded != null)
 				GlobalWindowManager.WindowAdded(null, new GwmWindowEventArgs(
@@ -164,8 +167,7 @@ namespace KeePass.UI
 
 		public static void RemoveWindow(Form form)
 		{
-			Debug.Assert(form != null);
-			if(form == null) throw new ArgumentNullException("form");
+			if(form == null) { Debug.Assert(false); throw new ArgumentNullException("form"); }
 
 			lock(g_oSyncRoot)
 			{
@@ -178,6 +180,9 @@ namespace KeePass.UI
 								form, g_vWindows[i].Value));
 
 						MonoWorkarounds.Release(form);
+
+						Debug.Assert(!(form is MainForm)); // MainForm calls the following itself
+						CustomizeFormHandleCreated(form, false, false);
 
 #if DEBUG
 						DebugClose(form);
@@ -239,28 +244,28 @@ namespace KeePass.UI
 			catch(Exception) { Debug.Assert(false); }
 		}
 
-		public static bool HasWindow(IntPtr hWindow)
+		public static bool HasWindow(IntPtr hWnd)
 		{
+			if(hWnd == IntPtr.Zero) { Debug.Assert(false); return false; }
+
 			lock(g_oSyncRoot)
 			{
 				foreach(KeyValuePair<Form, IGwmWindow> kvp in g_vWindows)
 				{
-					if(kvp.Key.Handle == hWindow) return true;
+					if(kvp.Key.Handle == hWnd) return true;
 				}
 			}
 
 			return false;
 		}
 
-		/* internal static bool HasWindowMW(IntPtr hWindow)
+		internal static bool HasWindowMW(IntPtr hWnd)
 		{
-			if(HasWindow(hWindow)) return true;
+			if(hWnd == IntPtr.Zero) { Debug.Assert(false); return false; }
 
-			MainForm mf = Program.MainForm;
-			if((mf != null) && (mf.Handle == hWindow)) return true;
-
-			return false;
-		} */
+			if(hWnd == Program.GetSafeMainWindowHandle()) return true;
+			return HasWindow(hWnd);
+		}
 
 		internal static bool ActivateTopWindow()
 		{
@@ -295,7 +300,7 @@ namespace KeePass.UI
 
 		public static void CustomizeControl(Control c)
 		{
-			if(NativeLib.IsUnix() && Program.Config.UI.ForceSystemFontUnix)
+			if(UISystemFonts.OverrideUIFont)
 			{
 				Font font = UISystemFonts.DefaultFont;
 				if(font != null) CustomizeFont(c, font);
@@ -312,6 +317,46 @@ namespace KeePass.UI
 
 			if(c.ContextMenuStrip != null)
 				CustomizeFont(c.ContextMenuStrip, font);
+		}
+
+		internal static void CustomizeFormHandleCreated(Form f,
+			bool? obSubscribe, bool bNow)
+		{
+			if(f == null) { Debug.Assert(false); return; }
+
+			if(obSubscribe.HasValue)
+			{
+				if(obSubscribe.Value)
+					f.HandleCreated += GlobalWindowManager.OnFormHandleCreated;
+				else f.HandleCreated -= GlobalWindowManager.OnFormHandleCreated;
+			}
+
+			if(bNow) OnFormHandleCreated(f, EventArgs.Empty);
+		}
+
+		private static bool g_bDisplayAffChanged = false;
+		private static void OnFormHandleCreated(object sender, EventArgs e)
+		{
+			try
+			{
+				Form f = (sender as Form);
+				if(f == null) { Debug.Assert(false); return; }
+
+				IntPtr hWnd = f.Handle;
+				if(hWnd == IntPtr.Zero) { Debug.Assert(false); return; }
+
+				if(WinUtil.IsAtLeastWindows7)
+				{
+					bool bPrvSC = Program.Config.Security.PreventScreenCapture;
+					if(bPrvSC || g_bDisplayAffChanged)
+					{
+						NativeMethods.SetWindowDisplayAffinity(hWnd, (bPrvSC ?
+							NativeMethods.WDA_MONITOR : NativeMethods.WDA_NONE));
+						g_bDisplayAffChanged = true; // Set WDA_NONE in future calls
+					}
+				}
+			}
+			catch(Exception) { Debug.Assert(false); }
 		}
 
 #if DEBUG

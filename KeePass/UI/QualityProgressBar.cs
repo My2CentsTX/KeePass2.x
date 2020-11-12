@@ -1,6 +1,6 @@
 /*
   KeePass Password Safe - The Open-Source Password Manager
-  Copyright (C) 2003-2017 Dominik Reichl <dominik.reichl@t-online.de>
+  Copyright (C) 2003-2020 Dominik Reichl <dominik.reichl@t-online.de>
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -19,14 +19,15 @@
 
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Text;
 using System.Windows.Forms;
 using System.Windows.Forms.VisualStyles;
-using System.Drawing;
-using System.Drawing.Drawing2D;
-using System.ComponentModel;
-using System.Diagnostics;
 
+using KeePass.App;
 using KeePass.Util;
 
 using KeePassLib.Native;
@@ -37,6 +38,8 @@ namespace KeePass.UI
 	{
 		public QualityProgressBar() : base()
 		{
+			if(Program.DesignMode) return;
+
 			this.DoubleBuffered = true;
 		}
 
@@ -72,6 +75,7 @@ namespace KeePass.UI
 			get { return m_pbsStyle; }
 			set { m_pbsStyle = value; this.Invalidate(); }
 		}
+		public bool ShouldSerializeStyle() { return false; }
 
 		private string m_strText = string.Empty;
 		[DefaultValue("")]
@@ -133,12 +137,14 @@ namespace KeePass.UI
 			int nDrawWidth = (int)((float)rectDraw.Width * (float)nNormPos /
 				(float)nNormMax);
 
-			Color clrStart = Color.FromArgb(255, 128, 0);
-			Color clrEnd = Color.FromArgb(0, 255, 0);
+			Color clrStart = AppDefs.ColorQualityLow;
+			Color clrEnd = AppDefs.ColorQualityHigh;
+			Color clrMid = AppDefs.ColorQualityMid;
 			if(!this.Enabled)
 			{
 				clrStart = UIUtil.ColorToGrayscale(SystemColors.ControlDark);
 				clrEnd = UIUtil.ColorToGrayscale(SystemColors.ControlLight);
+				clrMid = UIUtil.ColorMiddle(clrStart, clrEnd);
 			}
 
 			bool bRtl = (this.RightToLeft == RightToLeft.Yes);
@@ -158,14 +164,19 @@ namespace KeePass.UI
 			using(LinearGradientBrush brush = new LinearGradientBrush(rectGrad,
 				clrStart, clrEnd, LinearGradientMode.Horizontal))
 			{
+				ColorBlend cb = new ColorBlend();
+				cb.Colors = new Color[3] { clrStart, clrMid, clrEnd };
+				cb.Positions = new float[3] { 0.0f, 0.5f, 1.0f };
+				brush.InterpolationColors = cb;
+
 				g.FillRectangle(brush, (bRtl ? (rectDraw.Width - nDrawWidth + 1) :
 					rectDraw.Left), rectDraw.Top, nDrawWidth, rectDraw.Height);
 			}
 
-			PaintText(g, rectDraw);
+			PaintText(g, rectDraw, bRtl);
 		}
 
-		private void PaintText(Graphics g, Rectangle rectDraw)
+		private void PaintText(Graphics g, Rectangle rectDraw, bool bRtl)
 		{
 			if(string.IsNullOrEmpty(m_strText)) return;
 
@@ -173,18 +184,23 @@ namespace KeePass.UI
 			Color clrFG = UIUtil.ColorToGrayscale(this.ForeColor);
 			Color clrBG = Color.FromArgb(clrFG.ToArgb() ^ 0x20FFFFFF);
 
-			// Instead of an ellipse, Mono draws a circle, which looks ugly
-			if(!NativeLib.IsUnix())
-			{
-				int dx = rectDraw.X;
-				int dy = rectDraw.Y;
-				int dw = rectDraw.Width;
-				int dh = rectDraw.Height;
+			int dx = rectDraw.X;
+			int dy = rectDraw.Y;
+			int dw = rectDraw.Width;
+			int dh = rectDraw.Height;
 
+			if(!NativeLib.IsUnix() || !UIUtil.IsDarkColor(clrFG))
+			{
 				Rectangle rectGlow = rectDraw;
 				rectGlow.Width = TextRenderer.MeasureText(g, m_strText, f).Width;
 				rectGlow.X = ((dw - rectGlow.Width) / 2) + dx;
-				rectGlow.Inflate(rectGlow.Width / 2, rectGlow.Height / 2);
+
+				// Instead of an ellipse, Mono draws a circle
+				if(NativeLib.IsUnix())
+					rectGlow.Inflate(rectGlow.Width * 2, rectGlow.Height * 2);
+				else
+					rectGlow.Inflate(rectGlow.Width / 2, rectGlow.Height / 2);
+
 				using(GraphicsPath gpGlow = new GraphicsPath())
 				{
 					gpGlow.AddEllipse(rectGlow);
@@ -207,7 +223,6 @@ namespace KeePass.UI
 			// With ClearType on, text drawn using Graphics.DrawString
 			// looks better than TextRenderer.DrawText;
 			// https://sourceforge.net/p/keepass/discussion/329220/thread/06ef4466/
-
 			// TextFormatFlags tff = (TextFormatFlags.HorizontalCenter | TextFormatFlags.SingleLine |
 			//	TextFormatFlags.VerticalCenter);
 			// TextRenderer.DrawText(g, m_strText, f, rectDraw, clrFG, tff);
@@ -216,19 +231,20 @@ namespace KeePass.UI
 			{
 				StringFormatFlags sff = (StringFormatFlags.FitBlackBox |
 					StringFormatFlags.NoClip);
+				if(bRtl) sff |= StringFormatFlags.DirectionRightToLeft;
+
 				using(StringFormat sf = new StringFormat(sff))
 				{
 					sf.Alignment = StringAlignment.Center;
 					sf.LineAlignment = StringAlignment.Center;
 
-					RectangleF rf = new RectangleF(rectDraw.X, rectDraw.Y,
-						rectDraw.Width, rectDraw.Height);
+					RectangleF rf = new RectangleF(dx, dy, dw, dh);
 					g.DrawString(m_strText, f, br, rf, sf);
 				}
 			}
 		}
 
-		protected override void OnPaintBackground(PaintEventArgs pEvent)
+		protected override void OnPaintBackground(PaintEventArgs pevent)
 		{
 			// base.OnPaintBackground(pevent);
 		}

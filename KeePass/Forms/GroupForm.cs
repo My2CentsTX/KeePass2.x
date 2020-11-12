@@ -1,6 +1,6 @@
 /*
   KeePass Password Safe - The Open-Source Password Manager
-  Copyright (C) 2003-2017 Dominik Reichl <dominik.reichl@t-online.de>
+  Copyright (C) 2003-2020 Dominik Reichl <dominik.reichl@t-online.de>
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -20,14 +20,16 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
-using System.Drawing;
-using System.Text;
-using System.Windows.Forms;
 using System.Diagnostics;
+using System.Drawing;
 using System.Globalization;
+using System.Text;
+using System.Threading;
+using System.Windows.Forms;
 
-using KeePass.UI;
+using KeePass.App;
 using KeePass.Resources;
+using KeePass.UI;
 
 using KeePassLib;
 using KeePassLib.Collections;
@@ -80,7 +82,7 @@ namespace KeePass.Forms
 			BannerFactory.CreateBannerEx(this, m_bannerImage,
 				Properties.Resources.B48x48_Folder_Txt, strTitle,
 				(m_bCreatingNew ? KPRes.AddGroupDesc : KPRes.EditGroupDesc));
-			this.Icon = Properties.Resources.KeePass;
+			this.Icon = AppIcons.Default;
 			this.Text = strTitle;
 
 			UIUtil.SetButtonImage(m_btnAutoTypeEdit,
@@ -111,6 +113,9 @@ namespace KeePass.Forms
 			}
 			m_cgExpiry.Attach(m_cbExpires, m_dtExpires);
 
+			m_tbUuid.Text = m_pwGroup.Uuid.ToHexString() + ", " +
+				Convert.ToBase64String(m_pwGroup.Uuid.UuidBytes);
+
 			PwGroup pgParent = m_pwGroup.ParentGroup;
 			bool bParentAutoType = ((pgParent != null) ?
 				pgParent.GetAutoTypeEnabledInherited() :
@@ -131,10 +136,23 @@ namespace KeePass.Forms
 
 			m_sdCustomData = m_pwGroup.CustomData.CloneDeep();
 			UIUtil.StrDictListInit(m_lvCustomData);
-			UIUtil.StrDictListUpdate(m_lvCustomData, m_sdCustomData);
+			UIUtil.StrDictListUpdate(m_lvCustomData, m_sdCustomData, false);
 
 			CustomizeForScreenReader();
 			EnableControlsEx();
+
+			ThreadPool.QueueUserWorkItem(delegate(object state)
+			{
+				try
+				{
+					string[] vSeq = m_pwDatabase.RootGroup.GetAutoTypeSequences(true);
+					// Do not append, because long suggestions hide the start
+					UIUtil.EnableAutoCompletion(m_tbDefaultAutoTypeSeq,
+						false, vSeq); // Invokes
+				}
+				catch(Exception) { Debug.Assert(false); }
+			});
+
 			UIUtil.SetFocus(m_tbName, this);
 		}
 
@@ -151,7 +169,7 @@ namespace KeePass.Forms
 			m_tbDefaultAutoTypeSeq.Enabled = m_btnAutoTypeEdit.Enabled =
 				!m_rbAutoTypeInherit.Checked;
 
-			m_btnCDDel.Enabled = (m_lvCustomData.SelectedItems.Count > 0);
+			m_btnCDDel.Enabled = (m_lvCustomData.SelectedIndices.Count > 0);
 		}
 
 		private void OnBtnOK(object sender, EventArgs e)
@@ -246,7 +264,7 @@ namespace KeePass.Forms
 
 		private void OnBtnCDDel(object sender, EventArgs e)
 		{
-			UIUtil.StrDictListDeleteSel(m_lvCustomData, m_sdCustomData);
+			UIUtil.StrDictListDeleteSel(m_lvCustomData, m_sdCustomData, false);
 			UIUtil.SetFocus(m_lvCustomData, this);
 			EnableControlsEx();
 		}

@@ -1,6 +1,6 @@
 /*
   KeePass Password Safe - The Open-Source Password Manager
-  Copyright (C) 2003-2017 Dominik Reichl <dominik.reichl@t-online.de>
+  Copyright (C) 2003-2020 Dominik Reichl <dominik.reichl@t-online.de>
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -75,7 +75,7 @@ namespace KeePassLib
 			get { return m_uuid; }
 			set
 			{
-				Debug.Assert(value != null); if(value == null) throw new ArgumentNullException("value");
+				if(value == null) { Debug.Assert(false); throw new ArgumentNullException("value"); }
 				m_uuid = value;
 			}
 		}
@@ -108,7 +108,7 @@ namespace KeePassLib
 			get { return m_listStrings; }
 			set
 			{
-				Debug.Assert(value != null); if(value == null) throw new ArgumentNullException("value");
+				if(value == null) { Debug.Assert(false); throw new ArgumentNullException("value"); }
 				m_listStrings = value;
 			}
 		}
@@ -121,7 +121,7 @@ namespace KeePassLib
 			get { return m_listBinaries; }
 			set
 			{
-				Debug.Assert(value != null); if(value == null) throw new ArgumentNullException("value");
+				if(value == null) { Debug.Assert(false); throw new ArgumentNullException("value"); }
 				m_listBinaries = value;
 			}
 		}
@@ -134,7 +134,7 @@ namespace KeePassLib
 			get { return m_listAutoType; }
 			set
 			{
-				Debug.Assert(value != null); if(value == null) throw new ArgumentNullException("value");
+				if(value == null) { Debug.Assert(false); throw new ArgumentNullException("value"); }
 				m_listAutoType = value;
 			}
 		}
@@ -147,7 +147,7 @@ namespace KeePassLib
 			get { return m_listHistory; }
 			set
 			{
-				Debug.Assert(value != null); if(value == null) throw new ArgumentNullException("value");
+				if(value == null) { Debug.Assert(false); throw new ArgumentNullException("value"); }
 				m_listHistory = value;
 			}
 		}
@@ -171,7 +171,7 @@ namespace KeePassLib
 			get { return m_pwCustomIconID; }
 			set
 			{
-				Debug.Assert(value != null); if(value == null) throw new ArgumentNullException("value");
+				if(value == null) { Debug.Assert(false); throw new ArgumentNullException("value"); }
 				m_pwCustomIconID = value;
 			}
 		}
@@ -251,14 +251,14 @@ namespace KeePassLib
 		}
 
 		/// <summary>
-		/// Entry-specific override URL. If this string is non-empty,
+		/// Entry-specific override URL.
 		/// </summary>
 		public string OverrideUrl
 		{
 			get { return m_strOverrideUrl; }
 			set
 			{
-				if(value == null) throw new ArgumentNullException("value");
+				if(value == null) { Debug.Assert(false); throw new ArgumentNullException("value"); }
 				m_strOverrideUrl = value;
 			}
 		}
@@ -271,7 +271,7 @@ namespace KeePassLib
 			get { return m_vTags; }
 			set
 			{
-				if(value == null) throw new ArgumentNullException("value");
+				if(value == null) { Debug.Assert(false); throw new ArgumentNullException("value"); }
 				m_vTags = value;
 			}
 		}
@@ -784,45 +784,49 @@ namespace KeePassLib
 		}
 
 		/// <summary>
-		/// Approximate the total size of this entry in bytes (including
-		/// strings, binaries and history entries).
+		/// Approximate the total size (in process memory) of this entry
+		/// in bytes (including strings, binaries and history entries).
 		/// </summary>
 		/// <returns>Size in bytes.</returns>
 		public ulong GetSize()
 		{
-			ulong uSize = 128; // Approx fixed length data
+			// This method assumes 64-bit pointers/references and Unicode
+			// strings (i.e. 2 bytes per character)
 
+			ulong cb = 248; // Number of bytes; approx. fixed length data
+			ulong cc = 0; // Number of characters
+
+			cb += (ulong)m_listStrings.UCount * 40;
 			foreach(KeyValuePair<string, ProtectedString> kvpStr in m_listStrings)
-			{
-				uSize += (ulong)kvpStr.Key.Length;
-				uSize += (ulong)kvpStr.Value.Length;
-			}
+				cc += (ulong)kvpStr.Key.Length + (ulong)kvpStr.Value.Length;
 
+			cb += (ulong)m_listBinaries.UCount * 65;
 			foreach(KeyValuePair<string, ProtectedBinary> kvpBin in m_listBinaries)
 			{
-				uSize += (ulong)kvpBin.Key.Length;
-				uSize += kvpBin.Value.Length;
+				cc += (ulong)kvpBin.Key.Length;
+				cb += (ulong)kvpBin.Value.Length;
 			}
 
-			uSize += (ulong)m_listAutoType.DefaultSequence.Length;
+			cc += (ulong)m_listAutoType.DefaultSequence.Length;
+			cb += (ulong)m_listAutoType.AssociationsCount * 24;
 			foreach(AutoTypeAssociation a in m_listAutoType.Associations)
-			{
-				uSize += (ulong)a.WindowName.Length;
-				uSize += (ulong)a.Sequence.Length;
-			}
+				cc += (ulong)a.WindowName.Length + (ulong)a.Sequence.Length;
 
+			cb += (ulong)m_listHistory.UCount * 8;
 			foreach(PwEntry peHistory in m_listHistory)
-				uSize += peHistory.GetSize();
+				cb += peHistory.GetSize();
 
-			uSize += (ulong)m_strOverrideUrl.Length;
+			cc += (ulong)m_strOverrideUrl.Length;
 
+			cb += (ulong)m_vTags.Count * 8;
 			foreach(string strTag in m_vTags)
-				uSize += (ulong)strTag.Length;
+				cc += (ulong)strTag.Length;
 
+			cb += (ulong)m_dCustomData.Count * 16;
 			foreach(KeyValuePair<string, string> kvp in m_dCustomData)
-				uSize += (ulong)kvp.Key.Length + (ulong)kvp.Value.Length;
+				cc += (ulong)kvp.Key.Length + (ulong)kvp.Value.Length;
 
-			return uSize;
+			return (cb + (cc << 1));
 		}
 
 		public bool HasTag(string strTag)

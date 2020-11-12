@@ -1,6 +1,6 @@
 /*
   KeePass Password Safe - The Open-Source Password Manager
-  Copyright (C) 2003-2017 Dominik Reichl <dominik.reichl@t-online.de>
+  Copyright (C) 2003-2020 Dominik Reichl <dominik.reichl@t-online.de>
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -28,15 +28,17 @@ using System.Windows.Forms;
 
 using KeePass.App;
 using KeePass.App.Configuration;
-using KeePass.UI;
 using KeePass.Resources;
+using KeePass.UI;
 
 using KeePassLib;
-using KeePassLib.Delegates;
 using KeePassLib.Cryptography.Cipher;
 using KeePassLib.Cryptography.KeyDerivation;
+using KeePassLib.Delegates;
 using KeePassLib.Keys;
+using KeePassLib.Resources;
 using KeePassLib.Security;
+using KeePassLib.Serialization;
 using KeePassLib.Utility;
 
 namespace KeePass.Forms
@@ -48,7 +50,7 @@ namespace KeePass.Forms
 
 		private Color m_clr = Color.Empty;
 
-		private ContextMenu m_ctxColor = null;
+		private CustomContextMenuEx m_ctxColor = null;
 		private List<ColorMenuItem> m_vColorItems = new List<ColorMenuItem>();
 		private Image m_imgColor = null;
 
@@ -87,10 +89,15 @@ namespace KeePass.Forms
 
 			GlobalWindowManager.AddWindow(this);
 
+			IOConnectionInfo ioc = m_pwDatabase.IOConnectionInfo;
+			string strDisp = ioc.GetDisplayName();
+
+			string strDesc = KPRes.DatabaseSettingsDesc;
+			if(!string.IsNullOrEmpty(strDisp)) strDesc = strDisp;
+
 			BannerFactory.CreateBannerEx(this, m_bannerImage,
-				Properties.Resources.B48x48_Ark, KPRes.DatabaseSettings,
-				KPRes.DatabaseSettingsDesc);
-			this.Icon = Properties.Resources.KeePass;
+				Properties.Resources.B48x48_Ark, KPRes.DatabaseSettings, strDesc);
+			this.Icon = AppIcons.Default;
 
 			FontUtil.AssignDefaultItalic(m_lblHeaderCpAlgo);
 			FontUtil.AssignDefaultItalic(m_lblHeaderCp);
@@ -105,7 +112,7 @@ namespace KeePass.Forms
 			m_tbDbName.PromptText = KPRes.DatabaseNamePrompt;
 			m_tbDbDesc.PromptText = KPRes.DatabaseDescPrompt;
 
-			if(m_bCreatingNew) this.Text = KPRes.ConfigureOnNewDatabase;
+			if(m_bCreatingNew) this.Text = KPRes.ConfigureOnNewDatabase2;
 			else this.Text = KPRes.DatabaseSettings;
 
 			m_tbDbName.Text = m_pwDatabase.Name;
@@ -113,10 +120,14 @@ namespace KeePass.Forms
 			m_tbDefaultUser.Text = m_pwDatabase.DefaultUserName;
 
 			m_clr = m_pwDatabase.Color;
-			if(m_clr != Color.Empty)
+			bool bClr = !UIUtil.ColorsEqual(m_clr, Color.Empty);
+			if(bClr)
+			{
+				m_clr = AppIcons.RoundColor(m_clr);
 				UIUtil.OverwriteButtonImage(m_btnColor, ref m_imgColor,
 					UIUtil.CreateColorBitmap24(m_btnColor, m_clr));
-			m_cbColor.Checked = (m_clr != Color.Empty);
+			}
+			m_cbColor.Checked = bClr;
 
 			for(int inx = 0; inx < CipherPool.GlobalPool.EngineCount; ++inx)
 				m_cmbEncAlgo.Items.Add(CipherPool.GlobalPool[inx].DisplayName);
@@ -171,6 +182,7 @@ namespace KeePass.Forms
 
 			m_bInitializing = false;
 			EnableControlsEx();
+			UIUtil.SetFocus(m_tbDbName, this);
 		}
 
 		private void InitRecycleBinTab()
@@ -285,7 +297,7 @@ namespace KeePass.Forms
 		{
 			m_pwDatabase.SettingsChanged = DateTime.UtcNow;
 
-			if(!m_tbDbName.Text.Equals(m_pwDatabase.Name))
+			if(m_tbDbName.Text != m_pwDatabase.Name)
 			{
 				m_pwDatabase.Name = m_tbDbName.Text;
 				m_pwDatabase.NameChanged = DateTime.UtcNow;
@@ -294,13 +306,13 @@ namespace KeePass.Forms
 			string strNew = m_tbDbDesc.Text;
 			string strOrgFlt = StrUtil.NormalizeNewLines(m_pwDatabase.Description, false);
 			string strNewFlt = StrUtil.NormalizeNewLines(strNew, false);
-			if(!strNewFlt.Equals(strOrgFlt))
+			if(strNewFlt != strOrgFlt)
 			{
 				m_pwDatabase.Description = strNew;
 				m_pwDatabase.DescriptionChanged = DateTime.UtcNow;
 			}
 
-			if(!m_tbDefaultUser.Text.Equals(m_pwDatabase.DefaultUserName))
+			if(m_tbDefaultUser.Text != m_pwDatabase.DefaultUserName)
 			{
 				m_pwDatabase.DefaultUserName = m_tbDefaultUser.Text;
 				m_pwDatabase.DefaultUserNameChanged = DateTime.UtcNow;
@@ -510,11 +522,12 @@ namespace KeePass.Forms
 
 			if(m_ctxColor == null)
 			{
-				m_ctxColor = new ContextMenu();
+				m_ctxColor = new CustomContextMenuEx();
 
 				int qSize = (int)((20.0f * m_btnColor.Height) / 23.0f + 0.01f);
 
-				const int nMaxColors = 64;
+				// const int nMaxColors = 64;
+				int nMaxColors = AppIcons.Colors.Length;
 				int nBreakAt = (int)Math.Sqrt(0.1 + nMaxColors);
 
 				// m_ctxColor.LayoutStyle = ToolStripLayoutStyle.Flow;
@@ -532,8 +545,9 @@ namespace KeePass.Forms
 
 				for(int i = 0; i < nMaxColors; ++i)
 				{
-					float fHue = ((float)i * 360.0f) / (float)nMaxColors;
-					Color clr = UIUtil.ColorFromHsv(fHue, 1.0f, 1.0f);
+					// float fHue = ((float)i * 360.0f) / (float)nMaxColors;
+					// Color clr = UIUtil.ColorFromHsv(fHue, 1.0f, 1.0f);
+					Color clr = AppIcons.Colors[i];
 
 					// Image img = UIUtil.CreateColorBitmap24(16, 16, clr);
 					// ToolStripButton btn = new ToolStripButton(string.Empty, img);
@@ -566,7 +580,7 @@ namespace KeePass.Forms
 			// m_ctxColor.Visible = true;
 			// m_ctxColor.Show();
 
-			m_ctxColor.Show(m_btnColor, new Point(0, m_btnColor.Height));
+			m_ctxColor.ShowEx(m_btnColor);
 		}
 
 		private void OnColorCheckedChanged(object sender, EventArgs e)
@@ -843,7 +857,7 @@ namespace KeePass.Forms
 
 		private void KdfTestTh(object o)
 		{
-			string strMsg = KPRes.UnknownError;
+			string strMsg = KLRes.UnknownError;
 
 			try
 			{

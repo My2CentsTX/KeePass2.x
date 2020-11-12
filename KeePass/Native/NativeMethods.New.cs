@@ -1,6 +1,6 @@
 /*
   KeePass Password Safe - The Open-Source Password Manager
-  Copyright (C) 2003-2017 Dominik Reichl <dominik.reichl@t-online.de>
+  Copyright (C) 2003-2020 Dominik Reichl <dominik.reichl@t-online.de>
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -18,15 +18,13 @@
 */
 
 using System;
-using System.Text;
-using System.Security;
-using System.Runtime.InteropServices;
-using System.Windows.Forms;
-using System.Drawing;
-using System.Drawing.Drawing2D;
-using System.Drawing.Imaging;
-using System.IO;
 using System.Diagnostics;
+using System.Drawing;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Security;
+using System.Text;
+using System.Windows.Forms;
 
 using KeePass.UI;
 using KeePass.Util;
@@ -41,12 +39,47 @@ namespace KeePass.Native
 	{
 		internal static string GetWindowText(IntPtr hWnd, bool bTrim)
 		{
-			int nLength = GetWindowTextLength(hWnd);
-			if(nLength <= 0) return string.Empty;
+			// cc may be greater than the actual length;
+			// https://docs.microsoft.com/en-us/windows/desktop/api/winuser/nf-winuser-getwindowtextlengthw
+			int cc = GetWindowTextLength(hWnd);
+			if(cc <= 0) return string.Empty;
 
-			StringBuilder sb = new StringBuilder(nLength + 1);
-			GetWindowText(hWnd, sb, sb.Capacity);
-			string strWindow = sb.ToString();
+			// StringBuilder sb = new StringBuilder(cc + 2);
+			// int ccReal = GetWindowText(hWnd, sb, cc + 1);
+			// if(ccReal <= 0) { Debug.Assert(false); return string.Empty; }
+			// // The text isn't always NULL-terminated; trim garbage
+			// if(ccReal < sb.Length)
+			//	sb.Remove(ccReal, sb.Length - ccReal);
+			// string strWindow = sb.ToString();
+
+			string strWindow;
+			IntPtr p = IntPtr.Zero;
+			try
+			{
+				int cbChar = Marshal.SystemDefaultCharSize;
+				int cb = (cc + 2) * cbChar;
+				p = Marshal.AllocCoTaskMem(cb);
+				if(p == IntPtr.Zero) { Debug.Assert(false); return string.Empty; }
+
+				byte[] pbZero = new byte[cb];
+				Marshal.Copy(pbZero, 0, p, cb);
+
+				int ccReal = GetWindowText(hWnd, p, cc + 1);
+				if(ccReal <= 0) { Debug.Assert(false); return string.Empty; }
+
+				if(ccReal <= cc)
+				{
+					// Ensure correct termination (in case GetWindowText
+					// copied too much)
+					int ibZero = ccReal * cbChar;
+					for(int i = 0; i < cbChar; ++i)
+						Marshal.WriteByte(p, ibZero + i, 0);
+				}
+				else { Debug.Assert(false); return string.Empty; }
+
+				strWindow = (Marshal.PtrToStringAuto(p) ?? string.Empty);
+			}
+			finally { if(p != IntPtr.Zero) Marshal.FreeCoTaskMem(p); }
 
 			return (bTrim ? strWindow.Trim() : strWindow);
 		}
@@ -114,10 +147,10 @@ namespace KeePass.Native
 			return GetWindowLong(hWnd, GWL_STYLE);
 		}
 
-		internal static IntPtr GetClassLongPtr(IntPtr hWnd, int nIndex)
+		internal static IntPtr GetClassLongPtrEx(IntPtr hWnd, int nIndex)
 		{
-			if(IntPtr.Size > 4) return GetClassLongPtr64(hWnd, nIndex);
-			return GetClassLongPtr32(hWnd, nIndex);
+			if(IntPtr.Size == 4) return GetClassLong(hWnd, nIndex);
+			return GetClassLongPtr(hWnd, nIndex);
 		}
 
 		internal static bool SetForegroundWindowEx(IntPtr hWnd)
@@ -133,6 +166,8 @@ namespace KeePass.Native
 		{
 			if(!IsWindowEx(hWnd)) return false;
 
+			IntPtr hWndInit = GetForegroundWindowHandle();
+
 			if(!SetForegroundWindowEx(hWnd))
 			{
 				Debug.Assert(false);
@@ -144,6 +179,13 @@ namespace KeePass.Native
 			{
 				IntPtr h = GetForegroundWindowHandle();
 				if(h == hWnd) return true;
+
+				// Some applications (like Microsoft Edge) have multiple
+				// windows and automatically redirect the focus to other
+				// windows, thus also break when a different window gets
+				// focused (except when h is zero, which can occur while
+				// the focus transfer occurs)
+				if((h != IntPtr.Zero) && (h != hWndInit)) return true;
 
 				Application.DoEvents();
 			}
@@ -167,36 +209,37 @@ namespace KeePass.Native
 			return IntPtr.Zero;
 		}
 
-		internal static bool LoseFocus(Form fCurrent)
+		internal static bool LoseFocus(Form fCurrent, bool bSkipOwnWindows)
 		{
-			if(NativeLib.IsUnix())
-				return LoseFocusUnix(fCurrent);
+			if(NativeLib.IsUnix()) return LoseFocusUnix(fCurrent);
 
 			try
 			{
-				IntPtr hCurrentWnd = ((fCurrent != null) ? fCurrent.Handle : IntPtr.Zero);
-				IntPtr hWnd = GetWindow(hCurrentWnd, GW_HWNDNEXT);
+				IntPtr hWnd = ((fCurrent != null) ? fCurrent.Handle : IntPtr.Zero);
 
 				while(true)
 				{
-					if(hWnd != hCurrentWnd)
-					{
-						int nStyle = GetWindowStyle(hWnd);
-						if(((nStyle & WS_VISIBLE) != 0) &&
-							(GetWindowTextLength(hWnd) > 0))
-						{
-							// Skip the taskbar window (required for Windows 7,
-							// when the target window is the only other window
-							// in the taskbar)
-							if(!IsTaskBar(hWnd)) break;
-						}
-					}
-
+					IntPtr hWndPrev = hWnd;
 					hWnd = GetWindow(hWnd, GW_HWNDNEXT);
-					if(hWnd == IntPtr.Zero) break;
-				}
 
-				if(hWnd == IntPtr.Zero) return false;
+					if(hWnd == IntPtr.Zero) return false;
+					if(hWnd == hWndPrev) { Debug.Assert(false); return false; }
+
+					int nStyle = GetWindowStyle(hWnd);
+					if((nStyle & WS_VISIBLE) == 0) continue;
+
+					if(GetWindowTextLength(hWnd) == 0) continue;
+
+					if(bSkipOwnWindows && GlobalWindowManager.HasWindowMW(hWnd))
+						continue;
+
+					// Skip the taskbar window (required for Windows 7,
+					// when the target window is the only other window
+					// in the taskbar)
+					if(IsTaskBar(hWnd)) continue;
+
+					break;
+				}
 
 				Debug.Assert(GetWindowText(hWnd, true) != "Start");
 				return EnsureForegroundWindow(hWnd);
@@ -394,7 +437,7 @@ namespace KeePass.Native
 			return null;
 		}
 
-		internal static bool SHGetFileInfo(string strPath, int nPrefImgDim,
+		internal static bool SHGetFileInfo(string strPath, int dxImg, int dyImg,
 			out Image img, out string strDisplayName)
 		{
 			img = null;
@@ -412,14 +455,7 @@ namespace KeePass.Native
 				{
 					using(Icon ico = Icon.FromHandle(fi.hIcon)) // Doesn't take ownership
 					{
-						img = new Bitmap(nPrefImgDim, nPrefImgDim);
-						using(Graphics g = Graphics.FromImage(img))
-						{
-							g.Clear(Color.Transparent);
-							g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-							g.SmoothingMode = SmoothingMode.HighQuality;
-							g.DrawIcon(ico, new Rectangle(0, 0, nPrefImgDim, nPrefImgDim));
-						}
+						img = UIUtil.IconToBitmap(ico, dxImg, dyImg);
 					}
 
 					if(!DestroyIcon(fi.hIcon)) { Debug.Assert(false); }
@@ -654,10 +690,7 @@ namespace KeePass.Native
 					return true;
 				}
 			}
-			finally
-			{
-				Marshal.FreeCoTaskMem(pBuf);
-			}
+			finally { Marshal.FreeCoTaskMem(pBuf); }
 
 			Debug.Assert(false);
 			return false;
@@ -698,8 +731,23 @@ namespace KeePass.Native
 		{
 			if(m.Msg == NativeMethods.WM_KEYDOWN) return true;
 			if(m.Msg == NativeMethods.WM_KEYUP) return false;
+			if(m.Msg == NativeMethods.WM_SYSKEYDOWN) return true;
+			if(m.Msg == NativeMethods.WM_SYSKEYUP) return false;
 			return null;
 		}
+
+		/* internal static string GetKeyboardLayoutNameEx()
+		{
+			StringBuilder sb = new StringBuilder(KL_NAMELENGTH + 1);
+			if(GetKeyboardLayoutName(sb))
+			{
+				Debug.Assert(sb.Length == (KL_NAMELENGTH - 1));
+				return sb.ToString();
+			}
+			else { Debug.Assert(false); }
+
+			return null;
+		} */
 
 		/// <summary>
 		/// PRIMARYLANGID macro.
